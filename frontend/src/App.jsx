@@ -379,8 +379,8 @@ function App() {
       const plantNames = recs.map(r => r.name).join(', ');
       const plantContext = JSON.stringify(recs, null, 2);
       const res = await askAdvisor(
-        `Using your general gardening knowledge, briefly explain in 1-2 sentences why ${plantNames} thrive in ${prefs.sunlight || 'any'} light and ${prefs.space || 'any'} space.`, 
-        plantContext
+        `Using your general gardening knowledge, briefly explain why ${plantNames} thrive in ${prefs.sunlight || 'any'} light and ${prefs.space || 'any'} space.`, 
+        plantContext + "\nRespond in plain text as a single concise paragraph. Do NOT use markdown like asterisks (**). Do NOT include any introductory or concluding text."
       );
       if (res.success) {
         setAiExplanation(res.answer);
