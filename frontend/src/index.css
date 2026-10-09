@@ -1,0 +1,28 @@
+:root {
+  --primary: #52796f; /* sage green */
+  --primary-dark: #354f52; /* forest green */
+  --bg-light: #f8f9fa; /* warm white */
+  --bg-cream: #e9edc9; /* subtle cream */
+  --text-main: #2f3e46;
+  --text-muted: #6c757d;
+  --border: #dee2e6;
+  --card-bg: #ffffff;
+  --success: #84a98c;
+  --radius: 12px;
+  
+  --sans: system-ui, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+body {
+  margin: 0;
+  font-family: var(--sans);
+  background-color: var(--bg-light);
+  color: var(--text-main);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  display: flex;
+  min-height: 100vh;
+}
