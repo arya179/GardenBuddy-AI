@@ -29,14 +29,20 @@ export const askAdvisor = async (question, context = null) => {
 
     if (!response.ok) {
       const errData = await response.json().catch(() => null);
-      throw new Error((errData && errData.detail) || `HTTP error! status: ${response.status}`);
+      let detailStr = errData && errData.detail;
+      if (typeof detailStr === 'object') detailStr = JSON.stringify(detailStr);
+      throw new Error(detailStr || `HTTP error! status: ${response.status}`);
     }
 
     const data = await response.json();
     return { success: true, answer: data.answer };
   } catch (error) {
     console.error("Advisor request failed:", error);
-    return { success: false, error: error.message };
+    let errorMessage = error.message;
+    if (typeof errorMessage === 'object') {
+      errorMessage = JSON.stringify(errorMessage);
+    }
+    return { success: false, error: errorMessage || String(error) };
   }
 };
 
@@ -100,7 +106,19 @@ export const savePreferences = async (prefs) => {
     const response = await fetch(`${API_BASE_URL}/api/preferences`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(prefs)
+      body: JSON.stringify({
+        sunlight: prefs.sunlight || '',
+        space: prefs.space || '',
+        climateZone: prefs.climateZone || '',
+        gardenType: typeof prefs.gardenType === 'string' ? prefs.gardenType : JSON.stringify(prefs.gardenType || []),
+        city: prefs.city || '',
+        region: prefs.region || '',
+        country: prefs.country || '',
+        lat: prefs.lat || '',
+        lon: prefs.lon || '',
+        container: prefs.container || '',
+        maintenance: prefs.maintenance || ''
+      })
     });
     return await response.json();
   } catch (error) {
@@ -152,3 +170,32 @@ export const deletePlant = async (plantId) => {
     console.error("Failed to delete plant:", error);
   }
 };
+
+export const searchLocation = async (query) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/location/search?query=${encodeURIComponent(query)}`);
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.detail || `Failed to search location: ${response.status}`);
+    }
+    return { data: await response.json(), error: null };
+  } catch (error) {
+    console.error("Failed to search location:", error);
+    return { data: [], error: error.message };
+  }
+};
+
+export const getWeather = async (lat, lon) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/api/location/weather?lat=${lat}&lon=${lon}`);
+    if (!response.ok) {
+      const errData = await response.json().catch(() => ({}));
+      throw new Error(errData.detail || `Failed to fetch weather: ${response.status}`);
+    }
+    return { data: await response.json(), error: null };
+  } catch (error) {
+    console.error("Failed to fetch weather:", error);
+    return { data: null, error: error.message };
+  }
+};
+

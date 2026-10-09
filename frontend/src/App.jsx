@@ -1,12 +1,12 @@
 import { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { checkHealth, askAdvisor, getTasks, toggleTaskCompletion, getPreferences, savePreferences } from './api';
+import { checkHealth, askAdvisor, getTasks, toggleTaskCompletion, getPreferences, savePreferences, searchLocation, getWeather } from './api';
 import { PLANT_DATA } from './plantData';
 import './App.css';
 
 function App() {
   const [tasks, setTasks] = useState([]);
-  const [prefs, setPrefs] = useState({ sunlight: '', space: '', searchQuery: '' });
+  const [prefs, setPrefs] = useState({ sunlight: '', space: '', searchQuery: '', climateZone: '', gardenType: [], city: '', region: '', country: '', lat: '', lon: '', container: '', maintenance: '' });
 
   const [recommendations, setRecommendations] = useState(null);
   const [aiExplanation, setAiExplanation] = useState(null);
@@ -26,6 +26,18 @@ function App() {
   const tipOfTheDay = GARDEN_TIPS[new Date().getDate() % GARDEN_TIPS.length];
   const [suggestingTasks, setSuggestingTasks] = useState(false);
   const [checkingCompanions, setCheckingCompanions] = useState(false);
+  const [suggestedTasksModal, setSuggestedTasksModal] = useState(null);
+  const [fetchingPlantationData, setFetchingPlantationData] = useState(false);
+  const [fetchingRecommendations, setFetchingRecommendations] = useState(false);
+  const [plantationDataModal, setPlantationDataModal] = useState(null);
+  
+  const [isSearchingLocation, setIsSearchingLocation] = useState(false);
+  const [locationSearchResults, setLocationSearchResults] = useState([]);
+  const [showLocationDropdown, setShowLocationDropdown] = useState(false);
+  const [locationError, setLocationError] = useState(null);
+  const [showSetupModal, setShowSetupModal] = useState(false);
+  const [weatherData, setWeatherData] = useState(null);
+  const [fetchingWeather, setFetchingWeather] = useState(false);
   
   const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   
@@ -43,16 +55,43 @@ function App() {
         space: dbPrefs.space || '', 
         searchQuery: '', 
         experience: '',
-        gardenType: dbPrefs.gardenType || '',
-        climateZone: dbPrefs.climateZone || ''
+        gardenType: dbPrefs.gardenType ? (() => { try { return JSON.parse(dbPrefs.gardenType); } catch { return []; } })() : [],
+        climateZone: dbPrefs.climateZone || '',
+        city: dbPrefs.city || '',
+        region: dbPrefs.region || '',
+        country: dbPrefs.country || '',
+        lat: dbPrefs.lat || '',
+        lon: dbPrefs.lon || '',
+        container: dbPrefs.container || '',
+        maintenance: dbPrefs.maintenance || ''
       });
       import('./api').then(async ({ getPlants }) => {
         const dbPlants = await getPlants();
         setMyPlants(dbPlants);
       });
+      
+      if (dbPrefs.lat && dbPrefs.lon) {
+        fetchWeather(dbPrefs.lat, dbPrefs.lon);
+      }
     };
     fetchData();
   }, []);
+
+  const [weatherError, setWeatherError] = useState(null);
+
+  const fetchWeather = async (lat, lon) => {
+    setFetchingWeather(true);
+    setWeatherError(null);
+    setWeatherData(null); // Clear stale data to prevent confusing it with a new city
+    
+    const { data, error } = await getWeather(lat, lon);
+    if (error || !data) {
+      setWeatherError(error || 'Could not retrieve live weather. You are seeing offline/cached guidance if available.');
+    } else {
+      setWeatherData(data);
+    }
+    setFetchingWeather(false);
+  };
 
   useEffect(() => {
     const initHealthCheck = async () => {
@@ -89,6 +128,14 @@ function App() {
     await savePreferences(newPrefs);
   };
 
+  const toggleGardenType = (type) => {
+    const currentTypes = Array.isArray(prefs.gardenType) ? prefs.gardenType : [];
+    const newTypes = currentTypes.includes(type) 
+      ? currentTypes.filter(t => t !== type) 
+      : [...currentTypes, type];
+    handlePrefChange('gardenType', newTypes);
+  };
+
   const handleAddTask = async (e, titleOverride = null) => {
     if (e) e.preventDefault();
     const title = titleOverride || newTaskTitle;
@@ -111,7 +158,32 @@ function App() {
     e.preventDefault();
     if (!question.trim()) return;
     setAdvisorState({ loading: true, answer: null, error: null });
-    const result = await askAdvisor(question);
+    
+    let contextStr = `\n--- Context ---\n`;
+    if (prefs.city) contextStr += `Location: ${prefs.city}, ${prefs.region}, ${prefs.country}\n`;
+    if (prefs.gardenType.length > 0) contextStr += `Garden Type: ${prefs.gardenType.join(', ')}\n`;
+    
+    if (weatherData && weatherData.current) {
+      contextStr += `Weather (Updated: ${new Date(weatherData.current.time).toLocaleString()}): Temp ${weatherData.current.temperature_2m}°C, Humidity ${weatherData.current.relative_humidity_2m}%, Rain ${weatherData.current.precipitation}mm\n`;
+    }
+    
+    if (myPlants.length > 0) {
+      contextStr += `My Plants: ${myPlants.map(p => `${p.name} (${p.species}) - ${p.sunlight}, ${p.watering}`).join(' | ')}\n`;
+    }
+    
+    const incompleteTasks = tasks.filter(t => !t.completed);
+    if (incompleteTasks.length > 0) {
+      contextStr += `Incomplete Tasks for ${selectedDate}: ${incompleteTasks.map(t => t.text).join(', ')}\n`;
+    }
+    
+    const qLower = question.toLowerCase();
+    if (qLower.includes('plant') || qLower.includes('grow') || qLower.includes('flower') || qLower.includes('vegetable') || qLower.includes('butterfly') || qLower.includes('office')) {
+      contextStr += `Curated Plant Catalogue: ${PLANT_DATA.map(p => `${p.name} (${p.notes})`).join(' | ')}\n`;
+    }
+    
+    contextStr += `Instructions: You are the GardenBuddy AI. Use the provided context to answer. Distinguish live data from general gardening knowledge. Never fabricate weather observations or regional facts. Only suggest tasks you are confident about based on the context. If suggesting tasks, users will review them before saving.\n`;
+    
+    const result = await askAdvisor(question, contextStr);
     if (result.success) {
       setAdvisorState({ loading: false, answer: result.answer, error: null });
       setQuestion('');
@@ -152,14 +224,91 @@ function App() {
     setSuggestingTasks(true);
     const plantNames = myPlants.map(p => p.name).join(', ');
     const profileContext = prefs.climateZone ? ` I live in ${prefs.climateZone} and garden in a ${prefs.gardenType || 'standard space'}.` : '';
-    const res = await askAdvisor(`Based on my garden containing: ${plantNames}.${profileContext} Suggest exactly 2 brief practical gardening tasks I should do today. Format as a bulleted list.`);
+    const randomSeed = Math.floor(Math.random() * 10000);
+    
+    const question = `Suggest 3 gardening tasks for today.`;
+    const context = `My plants: ${plantNames}.${profileContext} Focus on varied tasks like pruning, watering, or pest checking. Random seed: ${randomSeed}. Format ONLY as a bulleted list using asterisks (*). No intro/outro text.`;
+    
+    const res = await askAdvisor(question, context);
     setSuggestingTasks(false);
     if (res.success) {
-      setQuestion(`Suggested tasks:\n${res.answer}`);
-      window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      const parsedTasks = res.answer.split('\n').filter(line => line.trim().startsWith('*') || line.trim().startsWith('-')).map(line => line.replace(/^[-*]\s*/, '').trim());
+      if (parsedTasks.length > 0) {
+        setSuggestedTasksModal(parsedTasks);
+      } else {
+        setQuestion(`Suggested tasks:\n${res.answer}`);
+        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+      }
     } else {
       alert("Failed to get suggestions. " + res.error);
     }
+  };
+
+  const handleFetchPlantationData = async () => {
+    const targetCity = prefs.city || prefs.climateZone;
+    if (!targetCity) {
+      alert("Please enter a City or Climate Zone first!");
+      return;
+    }
+    setFetchingPlantationData(true);
+    const month = new Date().toLocaleString('default', { month: 'long' });
+    const question = `Using your general horticultural knowledge, suggest 5 gardening tasks for ${targetCity} in ${month}.`;
+    const context = `Provide general seasonal guidance for this climate. Do not refuse by saying you lack real-time data. Include tasks like sowing, pruning, or repotting. Format ONLY as a bulleted list using asterisks (*). Do not include any introductory or concluding text. No JSON.`;
+    
+    const res = await askAdvisor(question, context);
+    setFetchingPlantationData(false);
+    if (res.success) {
+      const parsedTasks = res.answer.split('\n')
+        .map(line => line.trim())
+        .filter(line => line.startsWith('*') || line.startsWith('-'))
+        .map(line => line.replace(/^[-*]\s*/, '').trim());
+        
+      if (parsedTasks.length > 0) {
+        setPlantationDataModal(parsedTasks);
+      } else {
+        // Fallback if the AI didn't use bullets
+        setPlantationDataModal([res.answer]);
+      }
+    } else {
+      alert("Failed to fetch data: " + res.error);
+    }
+  };
+
+  const handleLocationSearch = async (e) => {
+    e.preventDefault();
+    if (!prefs.climateZone.trim()) return;
+    setIsSearchingLocation(true);
+    setLocationError(null);
+    try {
+      const { data, error } = await searchLocation(prefs.climateZone);
+      if (error) {
+        setLocationError(error);
+        setLocationSearchResults([]);
+      } else {
+        setLocationSearchResults(data || []);
+      }
+      setShowLocationDropdown(true);
+    } catch (err) {
+      setLocationError("Failed to search location.");
+    } finally {
+      setIsSearchingLocation(false);
+    }
+  };
+
+  const selectLocation = (loc) => {
+    const newPrefs = {
+      ...prefs,
+      climateZone: loc.name,
+      city: loc.name,
+      region: loc.admin1 || '',
+      country: loc.country || '',
+      lat: String(loc.latitude),
+      lon: String(loc.longitude)
+    };
+    setPrefs(newPrefs);
+    savePreferences(newPrefs);
+    setShowLocationDropdown(false);
+    fetchWeather(loc.latitude, loc.longitude);
   };
 
   const handleCompanionCheck = async () => {
@@ -187,6 +336,30 @@ function App() {
     }
   };
 
+  const handleLocalRecommendations = async () => {
+    if (!prefs.city) {
+      alert("Please search and save your city in the Garden Profile first!");
+      return;
+    }
+    setFetchingRecommendations(true);
+    
+    const catalogue = PLANT_DATA.map(p => `- ${p.name} (${p.notes})`).join('\n');
+    const gardenContext = prefs.gardenType.length > 0 ? `I am planting in a: ${prefs.gardenType.join(', ')}.` : '';
+    const lightSpace = `Sunlight: ${prefs.sunlight || 'Any'}. Space: ${prefs.space || 'Any'}.`;
+    
+    const question = `Based on my local climate in ${prefs.city}, ${prefs.region}, ${prefs.country}, recommend suitable plants.`;
+    const context = `Garden: ${gardenContext} ${lightSpace}\nCatalogue:\n${catalogue}\nFormat with clear headings (indoor, herbs, flowers). Explain explicitly why each suits the climate and space. Do not assume all plants suit a city merely because of its name.`;
+
+    const res = await askAdvisor(question, context);
+    setFetchingRecommendations(false);
+    
+    if (res.success) {
+      setPlantationDataModal(res.answer);
+    } else {
+      alert("Failed to fetch recommendations: " + res.error);
+    }
+  };
+
   const findPlants = async (e) => {
     e.preventDefault();
     if (findingPlants) return;
@@ -205,7 +378,10 @@ function App() {
       setAiExplanation(null);
       const plantNames = recs.map(r => r.name).join(', ');
       const plantContext = JSON.stringify(recs, null, 2);
-      const res = await askAdvisor(`In two short sentences, why are ${plantNames} good for ${prefs.sunlight} light and ${prefs.space} space?`, plantContext);
+      const res = await askAdvisor(
+        `Using your general gardening knowledge, briefly explain in 1-2 sentences why ${plantNames} thrive in ${prefs.sunlight || 'any'} light and ${prefs.space || 'any'} space.`, 
+        plantContext
+      );
       if (res.success) {
         setAiExplanation(res.answer);
       } else {
@@ -222,6 +398,126 @@ function App() {
 
   return (
     <div className="dashboard-layout">
+      {suggestedTasksModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div style={{ background: 'white', padding: '32px', borderRadius: '12px', maxWidth: '500px', width: '90%', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
+            <h3 style={{ marginTop: 0, color: '#283618', borderBottom: '2px solid #e9edc9', paddingBottom: '12px' }}>✨ AI Task Suggestions</h3>
+            <p style={{ fontSize: '0.9rem', color: '#666' }}>Based on your current garden and climate, here are a few things you could do today:</p>
+            <ul style={{ paddingLeft: '20px', margin: '24px 0' }}>
+              {suggestedTasksModal.map((task, idx) => (
+                <li key={idx} style={{ marginBottom: '16px', lineHeight: '1.5' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+                    <span style={{ flex: 1, color: '#283618' }}>{task}</span>
+                    <button onClick={() => { handleAddTask(null, task); setSuggestedTasksModal(prev => prev.filter((_, i) => i !== idx)); }} className="tag-btn" style={{ background: '#557b5e', color: 'white', padding: '6px 12px', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>+ Add to To-Do</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <div style={{ textAlign: 'right', marginTop: '16px' }}>
+              <button onClick={() => setSuggestedTasksModal(null)} style={{ padding: '8px 16px', border: '1px solid #ccc', background: '#f8f9fa', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {plantationDataModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div style={{ background: 'white', padding: '32px', borderRadius: '12px', maxWidth: '600px', width: '90%', maxHeight: '80vh', overflowY: 'auto', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
+            <h3 style={{ marginTop: 0, color: '#bc6c25', borderBottom: '2px solid #e9edc9', paddingBottom: '12px' }}>🌱 Seasonal Plantation Activities</h3>
+            <div style={{ whiteSpace: 'pre-wrap', lineHeight: '1.6', fontSize: '0.95rem', color: '#283618', margin: '20px 0' }}>
+              {Array.isArray(plantationDataModal) ? (
+                <ul style={{ paddingLeft: '20px', margin: 0 }}>
+                  {plantationDataModal.map((task, idx) => (
+                    <li key={idx} style={{ marginBottom: '16px', lineHeight: '1.5' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '12px' }}>
+                        <span style={{ flex: 1 }}>{task}</span>
+                        {!task.toLowerCase().includes('general guidance only') && (
+                          <button onClick={() => { 
+                            if (!tasks.some(t => t.text === task)) {
+                              handleAddTask(null, task); 
+                            } else {
+                              alert("Task is already in your To-Do list!");
+                            }
+                            // Optional: remove from list
+                            // setPlantationDataModal(prev => prev.filter((_, i) => i !== idx)); 
+                          }} className="tag-btn" style={{ background: '#dda15e', color: 'white', padding: '6px 12px', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>+ Add to To-Do</button>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                plantationDataModal
+              )}
+            </div>
+            <div style={{ textAlign: 'right', marginTop: '16px' }}>
+              <button onClick={() => setPlantationDataModal(null)} style={{ padding: '8px 16px', border: '1px solid #ccc', background: '#f8f9fa', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Close</button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {showSetupModal && (
+        <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 9999, display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
+          <div style={{ background: 'white', padding: '32px', borderRadius: '12px', maxWidth: '600px', width: '90%', maxHeight: '80vh', overflowY: 'auto', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
+            <h3 style={{ marginTop: 0, color: '#283618', borderBottom: '2px solid #e9edc9', paddingBottom: '12px' }}>🏡 Garden Setup & Preferences</h3>
+            
+            <div style={{ marginBottom: '20px' }}>
+              <h4 style={{ margin: '0 0 8px 0', fontSize: '0.95rem' }}>Select your garden types (multiple allowed):</h4>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {['Indoor/home plants', 'Office plants', 'Balcony or container garden', 'Terrace or rooftop garden', 'Outdoor/backyard garden', 'Vegetable garden', 'Flower garden', 'Butterfly and pollinator garden'].map(t => (
+                  <label key={t} style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '0.85rem', background: '#f8f9fa', padding: '6px 12px', border: '1px solid #dee2e6', borderRadius: '20px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={prefs.gardenType.includes(t)} onChange={() => toggleGardenType(t)} /> {t}
+                  </label>
+                ))}
+              </div>
+            </div>
+            
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+              <div>
+                <h4 style={{ margin: '0 0 8px 0', fontSize: '0.9rem' }}>Sunlight</h4>
+                <select className="advisor-input" value={prefs.sunlight} onChange={e => handlePrefChange('sunlight', e.target.value)} style={{ width: '100%', marginBottom: 0 }}>
+                  <option value="">Any</option>
+                  <option value="Full Sun">Full Sun</option>
+                  <option value="Partial Shade">Partial Shade</option>
+                  <option value="Full Shade">Full Shade</option>
+                </select>
+              </div>
+              <div>
+                <h4 style={{ margin: '0 0 8px 0', fontSize: '0.9rem' }}>Growing Space</h4>
+                <select className="advisor-input" value={prefs.space} onChange={e => handlePrefChange('space', e.target.value)} style={{ width: '100%', marginBottom: 0 }}>
+                  <option value="">Any</option>
+                  <option value="Small">Small</option>
+                  <option value="Medium">Medium</option>
+                  <option value="Large">Large</option>
+                </select>
+              </div>
+              <div>
+                <h4 style={{ margin: '0 0 8px 0', fontSize: '0.9rem' }}>Container Preferences</h4>
+                <select className="advisor-input" value={prefs.container} onChange={e => handlePrefChange('container', e.target.value)} style={{ width: '100%', marginBottom: 0 }}>
+                  <option value="">Any</option>
+                  <option value="Pots">Pots</option>
+                  <option value="Raised Beds">Raised Beds</option>
+                  <option value="In-ground">In-ground</option>
+                </select>
+              </div>
+              <div>
+                <h4 style={{ margin: '0 0 8px 0', fontSize: '0.9rem' }}>Maintenance</h4>
+                <select className="advisor-input" value={prefs.maintenance} onChange={e => handlePrefChange('maintenance', e.target.value)} style={{ width: '100%', marginBottom: 0 }}>
+                  <option value="">Any</option>
+                  <option value="Low">Low</option>
+                  <option value="Medium">Medium</option>
+                  <option value="High">High</option>
+                </select>
+              </div>
+            </div>
+            
+            <div style={{ textAlign: 'right' }}>
+              <button onClick={() => setShowSetupModal(false)} style={{ padding: '8px 16px', border: '1px solid #ccc', background: '#f8f9fa', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>Done</button>
+            </div>
+          </div>
+        </div>
+      )}
       <aside className="sidebar">
         <h2>🌿 GardenBuddy AI</h2>
         <div className="connection-status" style={{ fontSize: '0.85rem', marginBottom: '24px', opacity: 0.8 }}>
@@ -244,23 +540,104 @@ function App() {
 
       <main className="main-content">
         <section className="welcome-section" style={{marginBottom: '24px'}}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: '16px' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
             <div>
               <h1>{new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 18 ? 'Good afternoon' : 'Good evening'}, Gardener! 🌿</h1>
-              <p style={{ color: '#666' }}>Today is {new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}. Let's check on your garden.</p>
+              <p style={{ color: '#666' }}>Today is {new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}.</p>
             </div>
-            <div style={{ background: '#f8f9fa', padding: '12px', borderRadius: '8px', border: '1px solid #dee2e6', minWidth: '250px' }}>
-              <h4 style={{ margin: '0 0 8px 0', fontSize: '0.9rem' }}>📍 My Garden Profile</h4>
-              <input type="text" className="advisor-input" placeholder="City or Climate Zone..." value={prefs.climateZone} onChange={e => handlePrefChange('climateZone', e.target.value)} style={{ padding: '4px 8px', minHeight: 'auto', marginBottom: '8px', fontSize: '0.8rem' }} />
-              <select className="advisor-input" value={prefs.gardenType} onChange={e => handlePrefChange('gardenType', e.target.value)} style={{ padding: '4px 8px', minHeight: 'auto', marginBottom: 0, fontSize: '0.8rem' }}>
-                <option value="">Select Setup...</option>
-                <option value="Balcony">Apartment Balcony / Terrace</option>
-                <option value="Window">Window Boxes / Indoor</option>
-                <option value="Backyard">Outdoor Backyard / Raised Beds</option>
-                <option value="Urban">Small Urban Garden</option>
-              </select>
+            
+            <div style={{ background: '#f8f9fa', padding: '20px', borderRadius: '12px', border: '1px solid #dee2e6', display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
+                <h3 style={{ margin: 0, color: '#283618', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  📍 My Garden Profile
+                  {prefs.city && <span style={{fontSize: '0.75rem', padding: '2px 8px', background: '#d4edda', color: '#155724', borderRadius: '12px', fontWeight: 'normal'}}>Saved: {prefs.city}, {prefs.country}</span>}
+                </h3>
+              </div>
+              
+              <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'flex-start' }}>
+                <div style={{ position: 'relative', flex: 1, minWidth: '250px' }}>
+                  <form onSubmit={handleLocationSearch} style={{ display: 'flex', gap: '8px' }}>
+                    <input type="text" className="advisor-input" placeholder="Search City..." value={prefs.climateZone} onChange={e => { handlePrefChange('climateZone', e.target.value); setShowLocationDropdown(false); }} style={{ padding: '8px 12px', minHeight: 'auto', marginBottom: '0', fontSize: '0.9rem', flex: 1 }} />
+                    <button type="submit" disabled={isSearchingLocation} style={{ padding: '8px 16px', fontSize: '0.9rem', background: '#557b5e', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                      {isSearchingLocation ? 'Searching...' : 'Search'}
+                    </button>
+                  </form>
+                  {showLocationDropdown && (
+                    <div style={{ position: 'absolute', top: '100%', left: 0, right: 0, background: 'white', border: '1px solid #ccc', borderRadius: '6px', zIndex: 100, maxHeight: '250px', overflowY: 'auto', boxShadow: '0 8px 16px rgba(0,0,0,0.1)', marginTop: '4px' }}>
+                      {locationError && <div style={{ padding: '12px', color: '#dc3545', fontSize: '0.85rem' }}>{locationError} <button onClick={handleLocationSearch} style={{marginLeft: '8px', cursor: 'pointer', border: '1px solid #dc3545', background: 'transparent', borderRadius: '4px'}}>Retry</button></div>}
+                      {locationSearchResults.length === 0 && !locationError && <div style={{ padding: '12px', fontSize: '0.85rem', color: '#666' }}>No cities found.</div>}
+                      {locationSearchResults.map((loc, idx) => (
+                        <div key={idx} onClick={() => selectLocation(loc)} style={{ padding: '12px', borderBottom: '1px solid #eee', cursor: 'pointer', fontSize: '0.9rem' }}>
+                          <strong>{loc.name}</strong>
+                          <div style={{ fontSize: '0.8rem', color: '#666' }}>{loc.admin1 ? `${loc.admin1}, ` : ''}{loc.country}</div>
+                        </div>
+                      ))}
+                      <div style={{ padding: '8px', textAlign: 'center', borderTop: '1px solid #eee', background: '#f8f9fa' }}>
+                        <button onClick={() => setShowLocationDropdown(false)} style={{ fontSize: '0.8rem', background: 'none', border: 'none', color: '#666', cursor: 'pointer' }}>Close</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                
+                <button type="button" onClick={() => setShowSetupModal(true)} style={{ padding: '8px 16px', fontSize: '0.9rem', background: 'white', color: '#283618', border: '1px solid #ccd5ae', borderRadius: '6px', cursor: 'pointer', whiteSpace: 'nowrap', fontWeight: 'bold' }}>
+                  ⚙️ Garden Setup ({prefs.gardenType.length})
+                </button>
+              </div>
+
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', borderTop: '1px solid #e9ecef', paddingTop: '16px' }}>
+                <span style={{ fontSize: '0.85rem', color: '#666', display: 'flex', alignItems: 'center', marginRight: '8px' }}>Quick Actions:</span>
+                <button type="button" onClick={handleFetchPlantationData} disabled={fetchingPlantationData || (!prefs.city && !prefs.climateZone)} style={{ padding: '6px 12px', fontSize: '0.8rem', background: '#dda15e', color: 'white', border: 'none', borderRadius: '20px', cursor: 'pointer', whiteSpace: 'nowrap', opacity: (!prefs.city && !prefs.climateZone) ? 0.5 : 1 }}>
+                  {fetchingPlantationData ? 'Loading...' : '📅 Local Planting Calendar'}
+                </button>
+                <button type="button" onClick={() => document.getElementById('plant-finder-section').scrollIntoView({behavior: 'smooth'})} style={{ padding: '6px 12px', fontSize: '0.8rem', background: '#d4edda', color: '#155724', border: '1px solid #c3e6cb', borderRadius: '20px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  🌿 Find Local Plants
+                </button>
+                <button type="button" onClick={() => document.getElementById('daily-tasks-section').scrollIntoView({behavior: 'smooth'})} style={{ padding: '6px 12px', fontSize: '0.8rem', background: '#e2e3e5', color: '#383d41', border: '1px solid #d6d8db', borderRadius: '20px', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+                  📋 Today's Tasks
+                </button>
+              </div>
             </div>
           </div>
+          
+          {fetchingWeather && (
+            <div style={{ background: '#f8f9fa', padding: '16px', borderRadius: '8px', border: '1px solid #dee2e6', marginTop: '16px', color: '#666', fontSize: '0.9rem' }}>
+              ⏳ Fetching live weather data for {prefs.city}...
+            </div>
+          )}
+          
+          {weatherError && !fetchingWeather && (
+            <div style={{ background: '#fff3cd', padding: '16px', borderRadius: '8px', border: '1px solid #ffeeba', marginTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div style={{ color: '#856404', fontSize: '0.9rem' }}>
+                ⚠️ {weatherError}
+              </div>
+              <button onClick={() => fetchWeather(prefs.lat, prefs.lon)} style={{ padding: '6px 12px', fontSize: '0.8rem', background: '#ffeeba', color: '#856404', border: '1px solid #ffc107', borderRadius: '4px', cursor: 'pointer' }}>
+                Retry Connection
+              </button>
+            </div>
+          )}
+
+          {weatherData && weatherData.current && !fetchingWeather && (
+            <div style={{ background: '#f8f9fa', padding: '16px', borderRadius: '8px', border: '1px solid #dee2e6', marginTop: '16px', display: 'flex', gap: '24px', flexWrap: 'wrap', alignItems: 'center' }}>
+              <div style={{ flex: 1, minWidth: '200px' }}>
+                <h4 style={{ margin: '0 0 8px 0', fontSize: '1rem', color: '#bc6c25' }}>🌤️ Local Weather ({prefs.city})</h4>
+                <div style={{ display: 'flex', gap: '16px', fontSize: '0.9rem', color: '#283618' }}>
+                  <div><strong>Temp:</strong> {weatherData.current.temperature_2m}°C</div>
+                  <div><strong>Humidity:</strong> {weatherData.current.relative_humidity_2m}%</div>
+                  <div><strong>Rain:</strong> {weatherData.current.precipitation} mm</div>
+                </div>
+                <div style={{ fontSize: '0.75rem', color: '#666', marginTop: '4px' }}>
+                  Last updated: {new Date(weatherData.current.time).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
+                </div>
+              </div>
+              <div style={{ flex: 2, minWidth: '300px', background: 'white', padding: '12px', borderRadius: '6px', borderLeft: '4px solid #dda15e', fontSize: '0.85rem' }}>
+                <strong>💡 Garden Care Advisory:</strong><br/>
+                {weatherData.current.temperature_2m > 30 ? "🔥 Hot weather: Check container soil moisture daily. Deep watering is recommended. " : ""}
+                {weatherData.current.temperature_2m < 10 ? "❄️ Cold weather: Protect sensitive plants and reduce watering. " : ""}
+                {weatherData.current.precipitation > 5 || (weatherData.daily && weatherData.daily.precipitation_probability_max && weatherData.daily.precipitation_probability_max[0] > 70) ? "🌧️ Rain expected: Avoid automatic watering. Ensure outdoor pots have proper drainage to prevent waterlogging." : (!weatherData.current.precipitation && weatherData.current.temperature_2m <= 30 && weatherData.current.temperature_2m >= 10 ? "🌤️ Fair conditions: Maintain regular watering schedule." : "")}
+                <br/><span style={{color: '#666', fontSize: '0.75rem'}}>* Note: Indoor plants may not be affected by outside weather. Always check actual soil before watering.</span>
+              </div>
+            </div>
+          )}
         </section>
 
         <section className="stats-grid">
@@ -428,11 +805,16 @@ function App() {
                   <option value="Intermediate">Intermediate</option>
                 </select>
               </div>
-              <button type="submit" className="advisor-btn" disabled={findingPlants}>
-                {findingPlants ? 'Searching...' : 'Search Library'}
-              </button>
+              <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                <button type="submit" className="advisor-btn" disabled={findingPlants} style={{flex: 1}}>
+                  {findingPlants ? 'Searching...' : 'Search Library'}
+                </button>
+                <button type="button" onClick={handleLocalRecommendations} disabled={fetchingRecommendations || !prefs.city} className="advisor-btn" style={{flex: 1, background: '#dda15e', color: 'white'}}>
+                  {fetchingRecommendations ? 'Getting AI Recommendations...' : '✨ Get Local AI Recommendations'}
+                </button>
+              </div>
             </form>
-            <p style={{fontSize: '0.8rem', color: '#666', marginTop: '8px'}}>* Search our curated catalogue of indoor, office, edible, and pollinator plants.</p>
+            <p style={{fontSize: '0.8rem', color: '#666', marginTop: '8px'}}>* Search our curated catalogue or get AI recommendations based on your saved city profile.</p>
             
             {prefs.searchQuery && prefs.searchQuery.toLowerCase().includes('ayurvedic') && (
               <div style={{ background: '#fff3cd', borderLeft: '4px solid #ffc107', padding: '12px', marginTop: '16px', borderRadius: '4px', fontSize: '0.85rem', color: '#856404' }}>

@@ -188,6 +188,15 @@ def delete_task(task_id: int, db: Session = Depends(get_db)):
 class PrefsCreate(BaseModel):
     sunlight: str
     space: str
+    climateZone: Optional[str] = ""
+    gardenType: Optional[str] = ""
+    city: Optional[str] = ""
+    region: Optional[str] = ""
+    country: Optional[str] = ""
+    lat: Optional[str] = ""
+    lon: Optional[str] = ""
+    container: Optional[str] = ""
+    maintenance: Optional[str] = ""
 
 @app.get("/api/preferences")
 def read_prefs(db: Session = Depends(get_db)):
@@ -207,9 +216,69 @@ def update_prefs(prefs_in: PrefsCreate, db: Session = Depends(get_db)):
         db.add(prefs)
     prefs.sunlight = prefs_in.sunlight
     prefs.space = prefs_in.space
+    prefs.climateZone = prefs_in.climateZone
+    prefs.gardenType = prefs_in.gardenType
+    prefs.city = prefs_in.city
+    prefs.region = prefs_in.region
+    prefs.country = prefs_in.country
+    prefs.lat = prefs_in.lat
+    prefs.lon = prefs_in.lon
+    prefs.container = prefs_in.container
+    prefs.maintenance = prefs_in.maintenance
     db.commit()
     db.refresh(prefs)
     return prefs
+
+@app.get("/api/location/search")
+async def search_city(query: str):
+    query = query.strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="Query parameter is required")
+        
+    url = f"https://geocoding-api.open-meteo.com/v1/search?name={query}&count=5&language=en&format=json"
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, timeout=5.0)
+            response.raise_for_status()
+            data = response.json()
+            return data.get("results", [])
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="Upstream timeout: Open-Meteo Geocoding API took too long to respond.")
+        except httpx.ConnectError:
+            raise HTTPException(status_code=502, detail="Upstream connection failure: Could not reach Open-Meteo Geocoding API.")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                raise HTTPException(status_code=429, detail="Rate limit exceeded: Too many requests to Open-Meteo Geocoding API.")
+            raise HTTPException(status_code=exc.response.status_code, detail=f"Upstream API error: {exc.response.status_code}")
+        except Exception:
+            raise HTTPException(status_code=500, detail="An unexpected error occurred while fetching location data.")
+
+@app.get("/api/location/weather")
+async def get_weather(lat: str, lon: str):
+    if not lat or not lon:
+        raise HTTPException(status_code=400, detail="Latitude and longitude required.")
+    try:
+        lat_f = float(lat)
+        lon_f = float(lon)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Latitude and longitude must be valid numbers.")
+        
+    url = f"https://api.open-meteo.com/v1/forecast?latitude={lat_f}&longitude={lon_f}&current=temperature_2m,relative_humidity_2m,precipitation,weather_code&daily=precipitation_probability_max,temperature_2m_max,temperature_2m_min&timezone=auto"
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(url, timeout=5.0)
+            response.raise_for_status()
+            return response.json()
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="Upstream timeout: Open-Meteo Weather API took too long to respond.")
+        except httpx.ConnectError:
+            raise HTTPException(status_code=502, detail="Upstream connection failure: Could not reach Open-Meteo Weather API.")
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                raise HTTPException(status_code=429, detail="Rate limit exceeded: Too many requests to Open-Meteo Weather API.")
+            raise HTTPException(status_code=exc.response.status_code, detail=f"Upstream API error: {exc.response.status_code}")
+        except Exception:
+            raise HTTPException(status_code=500, detail="An unexpected error occurred while fetching weather data.")
 
 @app.get("/")
 def read_root():
